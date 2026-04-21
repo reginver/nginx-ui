@@ -3,204 +3,112 @@ package settings
 import (
 	"log"
 	"os"
-	"strings"
+	"path/filepath"
 	"sync"
-	"time"
 
-	"github.com/0xJacky/Nginx-UI/internal/helper"
-	"github.com/caarlos0/env/v11"
-	"github.com/elliotchance/orderedmap/v3"
-	"github.com/spf13/cast"
-	"github.com/uozi-tech/cosy/settings"
-	"gopkg.in/ini.v1"
+	"github.com/spf13/viper"
 )
 
 var (
-	buildTime    string
-	LastModified string
-	EnvPrefix    = "NGINX_UI_"
-	settingsMu   sync.Mutex
+	once     sync.Once
+	confPath string
 )
 
-var sections = orderedmap.NewOrderedMap[string, any]()
-
-var envPrefixMap = map[string]interface{}{
-	// Cosy
-	"APP":    settings.AppSettings,
-	"SERVER": settings.ServerSettings,
-	// Nginx UI
-	"DB":         DatabaseSettings,
-	"AUTH":       AuthSettings,
-	"CASDOOR":    CasdoorSettings,
-	"CERT":       CertSettings,
-	"CLUSTER":    ClusterSettings,
-	"CRYPTO":     CryptoSettings,
-	"HTTP":       HTTPSettings,
-	"LOGROTATE":  LogrotateSettings,
-	"NGINX":      NginxSettings,
-	"NGINX_LOG":  NginxLogSettings,
-	"NODE":       NodeSettings,
-	"OPENAI":     OpenAISettings,
-	"SITE_CHECK": SiteCheckSettings,
-	"TERMINAL":   TerminalSettings,
-	"WEBAUTHN":   WebAuthnSettings,
-	"BACKUP":     BackupSettings,
-	"OIDC":       OIDCSettings,
+// ServerSettings holds HTTP server configuration
+type ServerSettings struct {
+	Host      string `mapstructure:"host"`
+	Port      int    `mapstructure:"port"`
+	RunMode   string `mapstructure:"run_mode"`
+	JWTSecret string `mapstructure:"jwt_secret"`
 }
 
-func init() {
-	t := time.Unix(cast.ToInt64(buildTime), 0)
-	LastModified = strings.ReplaceAll(t.Format(time.RFC1123), "UTC", "GMT")
-
-	sections.Set("database", DatabaseSettings)
-	sections.Set("auth", AuthSettings)
-	sections.Set("backup", BackupSettings)
-	sections.Set("casdoor", CasdoorSettings)
-	sections.Set("oidc", OIDCSettings)
-	sections.Set("cert", CertSettings)
-	sections.Set("cluster", ClusterSettings)
-	sections.Set("crypto", CryptoSettings)
-	sections.Set("http", HTTPSettings)
-	sections.Set("logrotate", LogrotateSettings)
-	sections.Set("nginx", NginxSettings)
-	sections.Set("nginx_log", NginxLogSettings)
-	sections.Set("node", NodeSettings)
-	sections.Set("openai", OpenAISettings)
-	sections.Set("site_check", SiteCheckSettings)
-	sections.Set("terminal", TerminalSettings)
-	sections.Set("webauthn", WebAuthnSettings)
-
-	for k, v := range sections.AllFromFront() {
-		settings.Register(k, v)
-	}
-	settings.WithoutRedis()
-	settings.WithoutSonyflake()
+// NginxSettings holds nginx binary and config paths
+type NginxSettings struct {
+	AccessLogPath string `mapstructure:"access_log_path"`
+	ErrorLogPath  string `mapstructure:"error_log_path"`
+	ConfigDir     string `mapstructure:"config_dir"`
+	PIDPath       string `mapstructure:"pid_path"`
+	TestConfigCmd string `mapstructure:"test_config_cmd"`
+	ReloadCmd     string `mapstructure:"reload_cmd"`
 }
 
-func Init(confPath string) {
-	migrate(confPath)
-
-	settings.Init(confPath)
-
-	// Set Default Port
-	if settings.ServerSettings.Port == 0 {
-		settings.ServerSettings.Port = 9000
-	}
-
-	for prefix, ptr := range envPrefixMap {
-		parseEnv(ptr, prefix+"_")
-	}
-
-	// if in official docker, set the restart cmd of nginx to "nginx -s stop",
-	// then the supervisor of s6-overlay will start the nginx again.
-	if helper.InNginxUIOfficialDocker() {
-		NginxSettings.RestartCmd = "nginx -s stop"
-	}
-
-	if AuthSettings.BanThresholdMinutes <= 0 {
-		AuthSettings.BanThresholdMinutes = 10
-	}
-
-	if AuthSettings.MaxAttempts <= 0 {
-		AuthSettings.MaxAttempts = 10
-	}
+// DatabaseSettings holds database connection configuration
+type DatabaseSettings struct {
+	Name string `mapstructure:"name"`
 }
 
-func Update(fn func()) (err error) {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
-
-	fn()
-
-	return saveLocked()
+// LogSettings holds application log configuration
+type LogSettings struct {
+	Level string `mapstructure:"level"`
+	Path  string `mapstructure:"path"`
 }
 
-func Save() (err error) {
-	settingsMu.Lock()
-	defer settingsMu.Unlock()
-
-	return saveLocked()
+// Config is the global application configuration
+type Config struct {
+	Server   ServerSettings   `mapstructure:"server"`
+	Nginx    NginxSettings    `mapstructure:"nginx"`
+	Database DatabaseSettings `mapstructure:"database"`
+	Log      LogSettings      `mapstructure:"log"`
 }
 
-func saveLocked() (err error) {
-	// "fix" unable to save empty slice
-	if len(CertSettings.RecursiveNameservers) == 0 {
-		settings.Conf.Section("cert").Key("RecursiveNameservers").SetValue("")
+// Conf is the singleton configuration instance
+var Conf = &Config{}
+
+// Init loads configuration from the given path, applying defaults where needed.
+func Init(path string) {
+	once.Do(func() {
+		confPath = path
+		loadConfig()
+	})
+}
+
+func loadConfig() {
+	v := viper.New()
+
+	// Set defaults
+	v.SetDefault("server.host", "0.0.0.0")
+	v.SetDefault("server.port", 9000)
+	v.SetDefault("server.run_mode", "release")
+	v.SetDefault("nginx.access_log_path", "/var/log/nginx/access.log")
+	v.SetDefault("nginx.error_log_path", "/var/log/nginx/error.log")
+	v.SetDefault("nginx.config_dir", "/etc/nginx")
+	v.SetDefault("nginx.pid_path", "/var/run/nginx.pid")
+	v.SetDefault("nginx.test_config_cmd", "nginx -t")
+	v.SetDefault("nginx.reload_cmd", "nginx -s reload")
+	v.SetDefault("database.name", "database")
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.path", "log")
+
+	if confPath != "" {
+		v.SetConfigFile(confPath)
+	} else {
+		v.SetConfigName("app")
+		v.SetConfigType("ini")
+		v.AddConfigPath(".")
+		v.AddConfigPath("./config")
 	}
 
-	settings.ReflectFrom("app", settings.AppSettings)
-	settings.ReflectFrom("server", settings.ServerSettings)
-	settings.ReflectFrom("log", settings.LogSettings)
-	settings.ReflectFrom("sls", settings.SLSSettings)
+	v.AutomaticEnv()
 
-	for name, ptr := range sections.AllFromFront() {
-		settings.ReflectFrom(name, ptr)
-	}
-
-	err = saveConfAtomically(settings.Conf, settings.ConfPath)
-	if err != nil {
-		return
-	}
-
-	err = settings.Reload()
-	if err != nil {
-		return
-	}
-
-	err = settings.MapTo("app", settings.AppSettings)
-	if err != nil {
-		return
-	}
-
-	err = settings.MapTo("server", settings.ServerSettings)
-	if err != nil {
-		return
-	}
-
-	err = settings.MapTo("log", settings.LogSettings)
-	if err != nil {
-		return
-	}
-
-	err = settings.MapTo("sls", settings.SLSSettings)
-	if err != nil {
-		return
-	}
-
-	for name, ptr := range sections.AllFromFront() {
-		err = settings.MapTo(name, ptr)
-		if err != nil {
-			return
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(*os.PathError); ok {
+			log.Println("[settings] No config file found, using defaults")
+		} else {
+			log.Fatalf("[settings] Failed to read config: %v", err)
 		}
 	}
 
-	return
-}
-
-func saveConfAtomically(conf *ini.File, confPath string) (err error) {
-	tmpPath := confPath + ".tmp"
-
-	err = conf.SaveTo(tmpPath)
-	if err != nil {
-		return
+	if err := v.Unmarshal(Conf); err != nil {
+		log.Fatalf("[settings] Failed to unmarshal config: %v", err)
 	}
 
-	err = os.Rename(tmpPath, confPath)
-	if err != nil {
-		_ = os.Remove(tmpPath)
-		return
+	// Ensure log directory exists
+	if Conf.Log.Path != "" {
+		if err := os.MkdirAll(filepath.Clean(Conf.Log.Path), 0755); err != nil {
+			log.Printf("[settings] Could not create log directory: %v", err)
+		}
 	}
 
-	return
-}
-
-func parseEnv(ptr interface{}, prefix string) {
-	err := env.ParseWithOptions(ptr, env.Options{
-		Prefix:                EnvPrefix + prefix,
-		UseFieldNameByDefault: true,
-	})
-
-	if err != nil {
-		log.Fatalf("settings.parseEnv: %v\n", err)
-	}
+	log.Printf("[settings] Configuration loaded (run_mode=%s, port=%d)",
+		Conf.Server.RunMode, Conf.Server.Port)
 }
