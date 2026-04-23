@@ -66,7 +66,7 @@ func loadConfig() {
 	v := viper.New()
 
 	// Set defaults
-	v.SetDefault("server.host", "0.0.0.0")
+	v.SetDefault("server.host", "127.0.0.1") // personal preference: bind to localhost only by default
 	v.SetDefault("server.port", 9000)
 	v.SetDefault("server.run_mode", "release")
 	v.SetDefault("nginx.access_log_path", "/var/log/nginx/access.log")
@@ -76,7 +76,7 @@ func loadConfig() {
 	v.SetDefault("nginx.test_config_cmd", "nginx -t")
 	v.SetDefault("nginx.reload_cmd", "nginx -s reload")
 	v.SetDefault("database.name", "database")
-	v.SetDefault("log.level", "info")
+	v.SetDefault("log.level", "debug") // personal preference: default to debug for easier local troubleshooting
 	v.SetDefault("log.path", "log")
 
 	if confPath != "" {
@@ -109,6 +109,6 @@ func loadConfig() {
 		}
 	}
 
-	log.Printf("[settings] Configuration loaded (run_mode=%s, port=%d)",
-		Conf.Server.RunMode, Conf.Server.Port)
+	log.Printf("[settings] Configuration loaded (run_mode=%s, port=%d, host=%s)",
+		Conf.Server.RunMode, Conf.Server.Port, Conf.Server.Host)
 }
